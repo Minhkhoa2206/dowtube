@@ -1,0 +1,340 @@
+import wx
+import os
+import threading
+import webbrowser
+import re
+import requests
+from pytube import YouTube
+from PIL import Image, ImageTk
+from io import BytesIO
+import datetime
+
+class YouTubeDownloaderFrame(wx.Frame):
+    def __init__(self, *args, **kw):
+        super(YouTubeDownloaderFrame, self).__init__(*args, **kw)
+
+        # Create the panel
+        self.panel = wx.Panel(self)
+
+        # Create UI elements
+        self.label = wx.StaticText(self.panel, label='Enter YouTube URL:')
+        self.url_entry = wx.TextCtrl(self.panel, style=wx.TE_PROCESS_ENTER)
+        self.url_entry.Bind(wx.EVT_TEXT_ENTER, self.check_video_info)
+
+        self.check_info_button = wx.Button(self.panel, label='Check Info')
+        self.check_info_button.Bind(wx.EVT_BUTTON, self.check_video_info)
+
+        self.info_label = wx.StaticText(self.panel, label='Video Information:')
+        self.info_text = wx.TextCtrl(self.panel, style=wx.TE_MULTILINE | wx.TE_READONLY)
+
+        self.download_button = wx.Button(self.panel, label='Download Video')
+        self.download_button.Bind(wx.EVT_BUTTON, self.download_video)
+
+        self.download_audio_button = wx.Button(self.panel, label='Download Audio')
+        self.download_audio_button.Bind(wx.EVT_BUTTON, self.download_audio)
+
+        self.status_label = wx.TextCtrl(self.panel, style=wx.TE_READONLY | wx.TE_MULTILINE)
+        self.status_label.SetBackgroundColour(wx.SystemSettings.GetColour(wx.SYS_COLOUR_WINDOW))
+
+        # Add a new wx.StaticText for additional information
+        self.additional_info_label = wx.StaticText(self.panel, label='')
+        self.additional_info_label.Bind(wx.EVT_LEFT_DOWN, self.show_additional_info)  # Add event for left mouse click
+
+        # Set the text with additional information
+        additional_info_text = "Thông Tin"
+        self.additional_info_label.SetLabel(additional_info_text)
+
+        # Set the text color to green
+        self.additional_info_label.SetForegroundColour(wx.Colour(0, 0, 25))  # Green color
+
+        # Create the sizer and add the controls to it
+        self.sizer = wx.BoxSizer(wx.VERTICAL)
+        self.sizer.Add(self.label, 0, wx.ALL, 10)
+        self.sizer.Add(self.url_entry, 0, wx.EXPAND | wx.ALL, 10)
+        self.sizer.Add(self.check_info_button, 0, wx.ALL, 10)
+        self.sizer.Add(self.info_label, 0, wx.ALL, 10)
+        self.sizer.Add(self.info_text, 1, wx.EXPAND | wx.ALL, 10)
+        self.sizer.Add(self.download_button, 0, wx.ALL, 10)
+        self.sizer.Add(self.download_audio_button, 0, wx.ALL, 10)
+        self.sizer.Add(self.status_label, 0, wx.EXPAND | wx.ALL, 10)
+        self.sizer.Add(self.additional_info_label, 0, wx.ALIGN_RIGHT | wx.ALL, 10)
+
+        # Set the sizer for the panel
+        self.panel.SetSizer(self.sizer)
+
+        # Timer for updating the status label
+        self.timer = wx.Timer(self)
+        self.Bind(wx.EVT_TIMER, self.update_status_label, self.timer)
+
+        # Flag to indicate whether the operation is in progress
+        self.operation_in_progress = False
+        self.operation_type = ''
+
+        # Check internet connection
+        if not self.check_internet_connection():
+            wx.MessageBox("No Internet connection. Please connect to the Internet and try again.", "Error", wx.OK | wx.ICON_ERROR)
+            self.Destroy()
+            return
+
+        # Set window icon
+        self.set_window_icon()
+
+        # Start the application
+        self.Show()
+
+    def show_additional_info(self, event):
+        additional_info_text = "Tác giả: Minh Khoa, Ngày: 25/11/2023, Phiên Bản: V1.1.1. Lưu ý: - Đối với Video chỉ tải được ở chất lượng 720p - Đối với âm thanh chỉ tải được ở chất lượng 128kbs"
+        wx.MessageBox(additional_info_text, "Thông Tin", wx.OK | wx.ICON_INFORMATION)
+
+    def check_internet_connection(self):
+        try:
+            requests.get("http://www.google.com", timeout=1)
+            return True
+        except requests.ConnectionError:
+            return False
+
+    def set_window_icon(self):
+        # URL của icon
+        url = "https://raw.githubusercontent.com/Minhkhoa2206/FINTER/main/icon.ico"
+
+        # Tạo thư mục DowTube nếu nó chưa tồn tại
+        if not os.path.exists('C:/DowTube'):
+            os.makedirs('C:/DowTube')
+
+        # Tải xuống hình ảnh từ URL
+        response = requests.get(url)
+        img_data = response.content
+
+        # Mở hình ảnh bằng PIL
+        img = Image.open(BytesIO(img_data))
+
+        # Lưu hình ảnh dưới dạng tệp .ico trong thư mục DowTube
+        img.save("C:/DowTube/icon.ico")
+
+        # Đặt icon cho cửa sổ
+        icon = wx.Icon(name="C:/DowTube/icon.ico", type=wx.BITMAP_TYPE_ICO)
+        self.SetIcon(icon)
+
+    def check_video_info(self, event):
+        if self.operation_in_progress:
+            return
+
+        url = self.url_entry.GetValue()
+
+        # Set the initial status
+        self.set_status_label("Checking Info...")
+
+        # Create and start the info checker thread
+        self.operation_in_progress = True
+        self.operation_type = 'Checking Info'
+        self.info_checker_thread = threading.Thread(target=self.check_video_info_thread, args=(url,))
+        self.info_checker_thread.start()
+
+        # Start the timer to update the status label
+        self.timer.Start(500)  # Every 500 milliseconds
+
+    def check_video_info_thread(self, url):
+        try:
+            yt = YouTube(url)
+
+            # Get video information
+            title = yt.title
+            duration = str(yt.length // 60) + " minutes " + str(yt.length % 60) + " seconds"
+            size_video = self.get_video_size(yt)
+            size_audio = self.get_audio_size(yt)
+            info_text = f'Title: {title}\nDuration: {duration}\nVideo Size: {size_video}\nAudio Size: {size_audio}'
+
+            # Update the info text in the main thread
+            wx.CallAfter(self.info_text.SetValue, info_text)
+        except Exception as e:
+            wx.CallAfter(self.info_text.SetValue, f"Error: {str(e)}")
+
+        # Stop the timer when info check is complete
+        self.operation_in_progress = False
+        self.timer.Stop()
+        wx.CallAfter(self.update_status_label, None)
+
+    def get_video_size(self, yt):
+        # Get a stream with both video and audio
+        video_audio_stream = yt.streams.filter(file_extension='mp4', progressive=True, resolution='720p').order_by('abr').desc().first()
+
+        if video_audio_stream:
+            # Calculate the size of the video file in megabytes
+            size_in_bytes = video_audio_stream.filesize
+            size_in_megabytes = size_in_bytes / (1024 * 1024)
+            return f'{size_in_megabytes:.2f} MB'
+        else:
+            return 'N/A'
+
+    def get_audio_size(self, yt):
+        # Get the audio stream
+        audio_stream = yt.streams.filter(only_audio=True).first()
+
+        if audio_stream:
+            # Calculate the size of the audio file in megabytes
+            size_in_bytes = audio_stream.filesize
+            size_in_megabytes = size_in_bytes / (1024 * 1024)
+            return f'{size_in_megabytes:.2f} MB'
+        else:
+            return 'N/A'
+
+    def download_video(self, event):
+        if self.operation_in_progress:
+            return
+
+        url = self.url_entry.GetValue()
+
+        # Set the initial status
+        self.set_status_label("Downloading Video...")
+
+        # Create and start the video downloader thread
+        self.operation_in_progress = True
+        self.operation_type = 'Downloading Video'
+        self.downloader_thread = threading.Thread(target=self.download_thread, args=(url, 'video'))
+        self.downloader_thread.start()
+
+        # Start the timer to update the status label
+        self.timer.Start(500)  # Every 500 milliseconds
+
+    def download_audio(self, event):
+        if self.operation_in_progress:
+            return
+
+        url = self.url_entry.GetValue()
+
+        # Set the initial status
+        self.set_status_label("Downloading Audio...")
+
+        # Create and start the audio downloader thread
+        self.operation_in_progress = True
+        self.operation_type = 'Downloading Audio'
+        self.downloader_thread = threading.Thread(target=self.download_thread, args=(url, 'audio'))
+        self.downloader_thread.start()
+
+        # Start the timer to update the status label
+        self.timer.Start(500)  # Every 500 milliseconds
+
+    def download_thread(self, url, mode):
+        try:
+            # Clean up previous temporary files
+            self.clean_up_temp_files()
+
+            yt = YouTube(url)
+
+            # Get video information
+            title = yt.title
+            duration = str(yt.length // 60) + " minutes " + str(yt.length % 60) + " seconds"
+            size_video = self.get_video_size(yt)
+            size_audio = self.get_audio_size(yt)
+            info_text = f'Title: {title}\nDuration: {duration}\nVideo Size: {size_video}\nAudio Size: {size_audio}'
+
+            # Update the info text in the main thread
+            wx.CallAfter(self.info_text.SetValue, info_text)
+
+            # Check if the video is age-restricted
+            if yt.age_restricted:
+                wx.CallAfter(self.set_status_label, "This video is age-restricted. Please log in to your YouTube account to access it.")
+                webbrowser.open(url)
+                return
+
+            # Process the video title to remove special characters
+            cleaned_title = self.clean_title(title)
+
+            if mode == 'video':
+                # Get a stream with both video and audio
+                video_audio_streams = yt.streams.filter(file_extension='mp4', progressive=True, resolution='720p').order_by('abr').desc()
+                video_audio_stream = video_audio_streams.first()
+
+                # Download the video and audio stream
+                if video_audio_stream:
+                    desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop')
+
+                    # Add a counter to handle duplicate filenames
+                    counter = 2
+                    name_file_mp4 = f'{cleaned_title}.mp4'
+                    while os.path.exists(os.path.join(desktop_path, name_file_mp4)):
+                        name_file_mp4 = f'{cleaned_title}_{counter}.mp4'
+                        counter += 1
+
+                    video_audio_stream.download(output_path=desktop_path, filename=name_file_mp4)
+
+                    # Remove temporary files
+                    self.clean_up_temp_files()
+
+                    downloaded_size = self.get_video_size(yt)
+                    wx.CallAfter(self.set_status_label, f"Downloaded successfully: {name_file_mp4} (Size: {downloaded_size}/{size_video})")
+                else:
+                    wx.CallAfter(self.set_status_label, "Error: No video and audio stream found.")
+            elif mode == 'audio':
+                # Get the audio stream
+                audio_stream = yt.streams.filter(only_audio=True).first()
+
+                # Download the audio stream
+                if audio_stream:
+                    desktop_path = os.path.join(os.path.expanduser("~"), 'Desktop')
+
+                    # Add a counter to handle duplicate filenames
+                    counter = 2
+                    name_file_mp3 = f'{cleaned_title}.mp3'
+                    while os.path.exists(os.path.join(desktop_path, name_file_mp3)):
+                        name_file_mp3 = f'{cleaned_title}_{counter}.mp3'
+                        counter += 1
+
+                    audio_stream.download(output_path=desktop_path, filename=name_file_mp3)
+
+                    # Remove temporary files
+                    self.clean_up_temp_files()
+
+                    downloaded_size = self.get_audio_size(yt)
+                    wx.CallAfter(self.set_status_label, f"Downloaded successfully: {name_file_mp3} (Size: {downloaded_size}/{size_audio})")
+                else:
+                    wx.CallAfter(self.set_status_label, "Error: No audio stream found.")
+        except Exception as e:
+            wx.CallAfter(self.set_status_label, f"Error: {str(e)}")
+
+        # Stop the timer when download is complete
+        self.operation_in_progress = False
+        self.timer.Stop()
+        wx.CallAfter(self.update_status_label, None)
+
+    def update_status_label(self, event):
+        if self.operation_in_progress:
+            label_text = self.status_label.GetValue()
+            if label_text.endswith('...'):
+                label_text = f'{self.operation_type} '
+            else:
+                label_text += '...'
+            self.set_status_label(label_text)
+
+    def set_status_label(self, text):
+        # Clear the status label
+        self.status_label.SetValue("")
+        # Set the status label text
+        self.status_label.AppendText(text)
+
+    def clean_up_temp_files(self):
+        # Remove temporary video file
+        temp_video_file = 'mp4.mp4'
+        self.clean_up_file(temp_video_file)
+
+        # Remove temporary audio file
+        temp_audio_file = 'mp3.mp3'
+        self.clean_up_file(temp_audio_file)
+
+    def clean_up_file(self, file_path):
+        if os.path.exists(file_path):
+            try:
+                os.close(os.open(file_path, os.O_RDONLY | os.O_BINARY))
+            except:
+                pass
+            os.remove(file_path)
+
+    def clean_title(self, title):
+        # Remove special characters using regular expressions
+        cleaned_title = re.sub(r'[^\w\s]', '', title)
+        return cleaned_title
+
+if __name__ == '__main__':
+    app = wx.App()
+    frame = YouTubeDownloaderFrame(None, title='DowTube', size=(600, 600))
+    app.MainLoop()
